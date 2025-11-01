@@ -1,0 +1,19 @@
+﻿# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Expo/Metro
+.expo/
+.expo-shared/
+dist/
+
+# Next.js
+.next/
+out/
+
+# Env
+*.env
+*.env.*
+!*.example
