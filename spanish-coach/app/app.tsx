@@ -1,7 +1,7 @@
 import React, { useEffect, useReducer, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Platform } from "react-native";
 import { Audio } from "expo-av";
-import * as FileSystem from "expo-file-system";
+// import * as FileSystem from "expo-file-system";
 
 // ⬅️ Paste your backend URL (ngrok or Vercel)
 // e.g. "https://nonlethally-ostracizable-janey.ngrok-free.dev/api/turn"
@@ -116,36 +116,22 @@ export default function App() {
       const base64 = json.audioBase64 as string;
       if (!base64) throw new Error("No audioBase64 in response");
 
-      // Save to a temp file and play
-      const baseDir =
-        (FileSystem as any).cacheDirectory ||
-        (FileSystem as any).documentDirectory ||
-        ""; 
-
-      if (!baseDir) throw new Error("No writable directory available");
-
-      const localUri = `${baseDir}reply-${Date.now()}.mp3`;
-
-      await (FileSystem.writeAsStringAsync as any)(localUri, base64, {
-        // Some SDKs expose the enum; some don't—cast to keep TS happy
-        encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
-      });
-      // Stop any previous sound
+      // Play directly from base64 as a data URI (no disk write needed)
       if (soundRef.current) {
         try { await soundRef.current.stopAsync(); } catch {}
         try { await soundRef.current.unloadAsync(); } catch {}
         soundRef.current = null;
       }
 
-      const { sound } = await Audio.Sound.createAsync({ uri: localUri });
+      const { sound } = await Audio.Sound.createAsync({
+        uri: `data:audio/mpeg;base64,${base64}`,
+      });
       soundRef.current = sound;
+
       dispatch({ type: "UPLOAD_OK" });
       await sound.playAsync();
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status.isLoaded) return;
-        if ((status as any).didJustFinish) {
-          dispatch({ type: "PLAY_END" });
-        }
+      sound.setOnPlaybackStatusUpdate((status: any) => {
+        if (status?.didJustFinish) dispatch({ type: "PLAY_END" });
       });
     } catch (e: any) {
       setErrorMsg(e?.message ?? "Upload/play error");

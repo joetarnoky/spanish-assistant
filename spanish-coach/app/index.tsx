@@ -1,33 +1,25 @@
-// spanish-coach/app/index.tsx
 import React, { useEffect, useReducer, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet, ActivityIndicator, Platform } from "react-native";
 import { Audio } from "expo-av";
-import * as FileSystem from "expo-file-system";
 
 const API_URL = "https://nonlethally-ostracizable-janey.ngrok-free.dev/api/turn";
 
-// --- Tiny FSM ---
 type State = "idle" | "listening" | "uploading" | "speaking" | "error";
 type Event =
-  | { type: "PRESS_DOWN" }
-  | { type: "PRESS_UP" }
-  | { type: "UPLOAD_START" }
-  | { type: "UPLOAD_OK" }
-  | { type: "UPLOAD_ERR" }
-  | { type: "PLAY_END" }
-  | { type: "CANCEL" };
+  | { type: "PRESS_DOWN" } | { type: "PRESS_UP" } | { type: "UPLOAD_START" }
+  | { type: "UPLOAD_OK" } | { type: "UPLOAD_ERR" } | { type: "PLAY_END" } | { type: "CANCEL" };
 
 function reducer(state: State, ev: Event): State {
   switch (state) {
-    case "idle": if (ev.type === "PRESS_DOWN") return "listening"; return state;
+    case "idle": return ev.type === "PRESS_DOWN" ? "listening" : state;
     case "listening": if (ev.type === "PRESS_UP") return "uploading"; if (ev.type === "CANCEL") return "idle"; return state;
     case "uploading": if (ev.type === "UPLOAD_OK") return "speaking"; if (ev.type === "UPLOAD_ERR") return "error"; return state;
-    case "speaking": if (ev.type === "PLAY_END") return "idle"; return state;
-    case "error": if (ev.type === "CANCEL") return "idle"; return state;
+    case "speaking": return ev.type === "PLAY_END" ? "idle" : state;
+    case "error": return ev.type === "CANCEL" ? "idle" : state;
   }
 }
 
-export default function Screen() {
+export default function Home() {
   const [state, dispatch] = useReducer(reducer, "idle");
   const recordingRef = useRef<Audio.Recording | null>(null);
   const soundRef = useRef<Audio.Sound | null>(null);
@@ -39,8 +31,8 @@ export default function Screen() {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
-        staysActiveInBackground: false,
         shouldDuckAndroid: true,
+        staysActiveInBackground: false,
       });
     })();
   }, []);
@@ -68,7 +60,6 @@ export default function Screen() {
       dispatch({ type: "PRESS_UP" });
       if (!uri) throw new Error("No recording URI");
 
-      // Build multipart form (cast is normal for RN)
       const filename = uri.split("/").pop() ?? `turn.${Platform.OS === "ios" ? "caf" : "m4a"}`;
       const file: any = { uri, name: filename, type: Platform.OS === "ios" ? "audio/caf" : "audio/m4a" };
       const form = new FormData();
@@ -76,39 +67,26 @@ export default function Screen() {
 
       setErrorMsg(null);
       dispatch({ type: "UPLOAD_START" });
-
       const resp = await fetch(API_URL, { method: "POST", body: form });
-      if (!resp.ok) {
-        const text = await resp.text();
-        throw new Error(`Backend ${resp.status}: ${text}`);
-      }
-      const json = await resp.json();
-      const base64 = json.audioBase64 as string;
-      if (!base64) throw new Error("No audioBase64 in response");
+      if (!resp.ok) throw new Error(`Backend ${resp.status}: ${await resp.text()}`);
+      const { audioBase64 } = await resp.json();
+      if (!audioBase64) throw new Error("No audioBase64 in response");
 
-      const baseDir =
-        (FileSystem as any).cacheDirectory ||
-        (FileSystem as any).documentDirectory ||
-        "";
-      if (!baseDir) throw new Error("No writable directory available");
-
-      const localUri = `${baseDir}reply-${Date.now()}.mp3`;
-      await (FileSystem.writeAsStringAsync as any)(localUri, base64, {
-        encoding: (FileSystem as any).EncodingType?.Base64 ?? "base64",
-      });
-
+      // 🔊 Play directly from base64 (no FileSystem writes)
       if (soundRef.current) {
         try { await soundRef.current.stopAsync(); } catch {}
         try { await soundRef.current.unloadAsync(); } catch {}
         soundRef.current = null;
       }
-      const { sound } = await Audio.Sound.createAsync({ uri: localUri });
+      const { sound } = await Audio.Sound.createAsync({
+        uri: `data:audio/mpeg;base64,${audioBase64}`,
+      });
       soundRef.current = sound;
+
       dispatch({ type: "UPLOAD_OK" });
       await sound.playAsync();
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (!status || !("isLoaded" in status) || !status.isLoaded) return;
-        if ((status as any).didJustFinish) dispatch({ type: "PLAY_END" });
+      sound.setOnPlaybackStatusUpdate((st: any) => {
+        if (st?.didJustFinish) dispatch({ type: "PLAY_END" });
       });
     } catch (e: any) {
       setErrorMsg(e?.message ?? "Upload/play error");
