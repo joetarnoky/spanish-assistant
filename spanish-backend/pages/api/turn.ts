@@ -1,14 +1,10 @@
-// pages/api/turn.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 import OpenAI from "openai";
 import formidable, { File } from "formidable";
-import { toFile } from "openai/uploads";
 import fs from "fs";
-import { Readable } from "stream";
+import { toFile } from "openai/uploads";
 
-export const config = {
-  api: { bodyParser: false }, // needed for multipart/form-data
-};
+export const config = { api: { bodyParser: false } };
 
 const SYSTEM_PROMPT = `
 You are a warm Spanish conversation partner and coach.
@@ -19,57 +15,61 @@ Use Latin American Spanish consistently. Use informal "tú" form.
 Use simple vocabulary and grammar suitable for a beginner/intermediate learner.
 `;
 
+type Msg = { role: "user" | "assistant"; content: string };
+
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-function parseForm(req: NextApiRequest): Promise<{ filePath: string }> {
-  const form = formidable({ multiples: false });
+function parseForm(req: NextApiRequest): Promise<{ file: File; history: Msg[] }> {
+  const form = formidable({ multiples: false, maxFileSize: 25 * 1024 * 1024 });
   return new Promise((resolve, reject) => {
-    form.parse(req, (err, _fields, files) => {
+    form.parse(req, (err, fields, files) => {
       if (err) return reject(err);
-      const anyFile =
-        (files.audio as formidable.File) ||
-        (Object.values(files)[0] as formidable.File);
-      if (!anyFile?.filepath) return reject(new Error("No audio file uploaded"));
-      resolve({ filePath: anyFile.filepath });
+      const file =
+        (files.audio as File) || (Object.values(files)[0] as File);
+      if (!file?.filepath) return reject(new Error("No audio file uploaded"));
+
+      let history: Msg[] = [];
+      const h = (fields.history as string) || "";
+      if (h) {
+        try { history = JSON.parse(h) as Msg[]; } catch {/* ignore */ }
+      }
+      // keep last few turns to control cost
+      if (history.length > 8) history = history.slice(-8);
+      resolve({ file, history });
     });
   });
 }
 
-function fileStream(path: string) {
-  return fs.createReadStream(path);
-}
-
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method === "GET") return res.status(200).json({ ok: true, route: "turn" });
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
   try {
-    const { filePath } = await parseForm(req);
+    const { file, history } = await parseForm(req);
 
     // 1) STT
-    // const stt = await client.audio.transcriptions.create({
-    //   file: fileStream(filePath) as unknown as Readable,
-    //   model: "gpt-4o-mini-transcribe", // or "whisper-1"
-    //   // language: "es", // optional hint
-    // });
-
     const stt = await client.audio.transcriptions.create({
-      file: await toFile(fs.createReadStream(filePath), "audio.m4a"),
-      model: "whisper-1", // or "gpt-4o-mini-transcribe"
+      file: await toFile(fs.createReadStream(file.filepath), file.originalFilename || "audio.m4a"),
+      model: "gpt-4o-mini-transcribe", // or "whisper-1"
+      // language: "es",
     });
+    const userText = (stt as any).text || "";
 
-    const userText = (stt as any).text ?? "";
+    // 2) Chat (prepend system, then history, then current user)
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...history.map(m => ({ role: m.role, content: m.content })),
+      { role: "user", content: userText },
+    ];
 
-    // 2) Chat
     const chat = await client.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userText },
-      ],
+      messages,
       temperature: 0.7,
+      max_tokens: 200,
     });
     const reply = chat.choices[0]?.message?.content || "¿Puedes repetir, por favor?";
 
@@ -79,15 +79,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       voice: "alloy",
       input: reply,
     });
-
     const audioBuf = Buffer.from(await speech.arrayBuffer());
-    res.setHeader("Content-Type", "audio/mpeg");
+
+    // 4) Return audio + texts so the client can update history
+    res.setHeader("Content-Type", "application/json");
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
       audioBase64: audioBuf.toString("base64"),
-      // (optional) echo these if you want to display them in the UI later:
-      // transcript: userText,
-      // replyText: reply,
+      transcript: userText,
+      replyText: reply,
     });
   } catch (e: any) {
     console.error(e);
