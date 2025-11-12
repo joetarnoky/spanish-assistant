@@ -48,6 +48,8 @@ export default function Home() {
   const [state, dispatch] = useReducer(reducer, "idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [history, setHistory] = useState<ChatMsg[]>([]);
+  const [isReplayDisabled, setIsReplayDisabled] = useState(true);
+  const [chatVisible, setChatVisible] = useState(true);
 
   const recordingRef = useRef<Audio.Recording | null>(null);
   const soundRef = useRef<Audio.Sound | null>(null);
@@ -147,6 +149,7 @@ export default function Home() {
       soundRef.current = sound;
 
       dispatch({ type: "UPLOAD_OK" });
+      setIsReplayDisabled(false);
       await sound.playAsync();
       sound.setOnPlaybackStatusUpdate((st: any) => {
         if (st?.didJustFinish) dispatch({ type: "PLAY_END" });
@@ -157,41 +160,80 @@ export default function Home() {
     }
   }
 
+  async function replayAudio() {
+    try {
+      if (!soundRef.current) return;
+      await soundRef.current.stopAsync();
+      await soundRef.current.playAsync();
+      soundRef.current.setOnPlaybackStatusUpdate((st: any) => {
+        // Just silently finish, don't dispatch to avoid interfering with state
+      });
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? "Replay error");
+    }
+  }
+
   return (
     <View style={styles.container}>
 
-      {/* Chat history fills available space */}
-      <View style={styles.historyWrap}>
-        <ScrollView ref={scrollRef} contentContainerStyle={styles.historyContent}>
-          {history.map((m, i) => (
-            <Text
-              key={i}
-              style={[styles.msg, m.role === "user" ? styles.user : styles.assistant]}
-            >
-              <Text style={styles.role}>{m.role === "user" ? "Tú" : "Asistente"}: </Text>
-              {m.content}
-            </Text>
-          ))}
-        </ScrollView>
+      {/* Chat history wrapper - always takes flex space */}
+      <View style={styles.chatContainer}>
+        {chatVisible && (
+          <View style={styles.historyWrap}>
+            <ScrollView ref={scrollRef} contentContainerStyle={styles.historyContent}>
+              {history.map((m, i) => (
+                <Text
+                  key={i}
+                  style={[styles.msg, m.role === "user" ? styles.user : styles.assistant]}
+                >
+                  <Text style={styles.role}>{m.role === "user" ? "Tú" : "Asistente"}: </Text>
+                  {m.content}
+                </Text>
+              ))}
+            </ScrollView>
+          </View>
+        )}
       </View>
 
-      <Pressable
-        style={[
-          styles.button,
-          state === "listening" && styles.buttonActive,
-          state !== "idle" && state !== "listening" && styles.buttonDisabled,
-        ]}
-        onPressIn={() => state === "idle" && startRecording()}
-        onPressOut={() => state === "listening" && stopAndSend()}
-      >
-        <Text style={styles.buttonText}>
-          {state === "idle" && "Hold to Talk"}
-          {state === "listening" && "Release to Send"}
-          {state === "uploading" && "Sending…"}
-          {state === "speaking" && "Playing…"}
-          {state === "error" && "Error – Tap to reset"}
-        </Text>
-      </Pressable>
+      <View style={styles.buttonContainer}>
+        <Pressable
+          style={[
+            styles.replayButton,
+            isReplayDisabled && styles.replayButtonDisabled,
+          ]}
+          onPress={() => !isReplayDisabled && replayAudio()}
+          disabled={isReplayDisabled}
+        >
+          <Text style={styles.replayButtonText}>↻</Text>
+        </Pressable>
+
+        <Pressable
+          style={[
+            styles.button,
+            state === "listening" && styles.buttonActive,
+            state !== "idle" && state !== "listening" && styles.buttonDisabled,
+          ]}
+          onPressIn={() => state === "idle" && startRecording()}
+          onPressOut={() => state === "listening" && stopAndSend()}
+        >
+          <Text style={styles.buttonText}>
+            {state === "idle" && "Hold to Talk"}
+            {state === "listening" && "Release to Send"}
+            {state === "uploading" && "Sending…"}
+            {state === "speaking" && "Playing…"}
+            {state === "error" && "Error – Tap to reset"}
+          </Text>
+        </Pressable>
+
+        <Pressable
+          style={[
+            styles.toggleButton,
+          ]}
+          onPress={() => setChatVisible(!chatVisible)}
+        >
+          <Text style={styles.toggleButtonText}>{chatVisible ? "▤" : "▢"}</Text>
+        </Pressable>
+      </View>
 
       {state === "uploading" && <ActivityIndicator style={{ marginTop: 8 }} />}
       {errorMsg && <Text style={styles.error}>{errorMsg}</Text>}
@@ -200,8 +242,13 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, paddingTop: 42, gap: 12, backgroundColor: "#000000" },
+  container: { flex: 1, padding: 20, paddingTop: 42, gap: 12, backgroundColor: "#000000", justifyContent: "space-between" },
   title: { fontSize: 22, fontWeight: "700", color: "#ffffff" },
+
+  chatContainer: {
+    flex: 1,
+    justifyContent: "flex-start",
+  },
 
   historyWrap: {
     flex: 1,
@@ -218,6 +265,24 @@ const styles = StyleSheet.create({
   user: { color: "#ffffff" },                    // user = white
   assistant: { color: "#2563eb" },               // assistant = blue
 
+  buttonContainer: {
+    flexDirection: "row",
+    gap: 12,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  replayButton: {
+    backgroundColor: "#111827",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#1f2937",
+  },
+  replayButtonDisabled: { opacity: 0.4 },
+  replayButtonText: { color: "#ffffff", fontSize: 18, fontWeight: "600" },
+
   button: {
     alignSelf: "center",
     backgroundColor: "#111827",
@@ -230,6 +295,16 @@ const styles = StyleSheet.create({
   buttonActive: { backgroundColor: "#2563eb" },
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: "#ffffff", fontSize: 16, fontWeight: "600" },
+
+  toggleButton: {
+    backgroundColor: "#111827",
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#1f2937",
+  },
+  toggleButtonText: { color: "#ffffff", fontSize: 18, fontWeight: "600" },
 
   error: { color: "#f87171", textAlign: "center" },
 });
